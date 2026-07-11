@@ -274,6 +274,10 @@ You can also change:
   Controls how many files `99_search_all.bat` processes in parallel.
 - `SOURCE_RETRY_MAX_ATTEMPTS`
   Controls how many times source-site requests are retried after `429`, temporary `5xx`, or transient network errors.
+- `SOURCE_CIRCUIT_BREAKER_THRESHOLD`
+  After this many fully failed requests in a row to the same source, that source is temporarily suspended.
+- `SOURCE_CIRCUIT_BREAKER_COOLDOWN_SECONDS`
+  How long a repeatedly failing source stays suspended before requests are attempted again.
 - `SOURCE_RETRY_BASE_DELAY_MS`
   Base delay for automatic source-site backoff.
 - `SOURCE_RETRY_MAX_DELAY_MS`

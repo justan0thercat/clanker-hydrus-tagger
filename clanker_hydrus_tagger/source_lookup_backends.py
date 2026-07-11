@@ -54,6 +54,14 @@ SOURCE_RETRY_MAX_ATTEMPTS = max(
     0,
     int(os.getenv("SOURCE_RETRY_MAX_ATTEMPTS", "2")),
 )
+SOURCE_CIRCUIT_BREAKER_THRESHOLD = max(
+    1,
+    int(os.getenv("SOURCE_CIRCUIT_BREAKER_THRESHOLD", "3")),
+)
+SOURCE_CIRCUIT_BREAKER_COOLDOWN_SECONDS = max(
+    1.0,
+    float(os.getenv("SOURCE_CIRCUIT_BREAKER_COOLDOWN_SECONDS", "60")),
+)
 SOURCE_RETRY_BASE_DELAY_MS = max(
     100,
     int(os.getenv("SOURCE_RETRY_BASE_DELAY_MS", "750")),
@@ -119,6 +127,15 @@ SOURCE_MD5_PRIORITY_GROUPS = (
 SOURCE_URL_PRIORITY_GROUPS = SOURCE_MD5_PRIORITY_GROUPS
 
 
+class TemporarySourceSuspensionError(URLError):
+    def __init__(self, bucket, wait_seconds):
+        self.bucket = str(bucket)
+        self.wait_seconds = max(0.0, float(wait_seconds))
+        super().__init__(
+            f"{self.bucket}: temporarily suspended for {self.wait_seconds:.1f}s after consecutive failures"
+        )
+
+
 def fetch_json(url, timeout):
     return SOURCE_REQUEST_CONTROLLER.fetch_json(url, timeout)
 
@@ -137,6 +154,10 @@ def normalize_domain(netloc):
     if domain.startswith("www."):
         domain = domain[4:]
     return domain
+
+
+def is_temporary_source_suspension_error(exc):
+    return isinstance(exc, TemporarySourceSuspensionError)
 
 
 def get_source_request_bucket(url):
@@ -198,6 +219,8 @@ class SourceRequestController:
                 "retries": 0,
                 "rate_limits": 0,
                 "recovered": 0,
+                "suspensions": 0,
+                "suspended_skips": 0,
             }
 
         with self._events_lock:
@@ -208,6 +231,9 @@ class SourceRequestController:
                 with state["lock"]:
                     state["next_allowed_at"] = 0.0
                     state["backoff_until"] = 0.0
+                    state["circuit_open_until"] = 0.0
+                    state["consecutive_failures"] = 0
+                    state["suspension_skip_count"] = 0
 
     def snapshot(self):
         with self._stats_lock:
@@ -225,6 +251,20 @@ class SourceRequestController:
         with self._events_lock:
             events = list(self._events)
             self._events.clear()
+
+        with self._states_lock:
+            state_items = list(self._states.items())
+
+        for bucket, state in state_items:
+            with state["lock"]:
+                skip_count = state.get("suspension_skip_count", 0)
+                state["suspension_skip_count"] = 0
+            if skip_count:
+                request_word = "request" if skip_count == 1 else "requests"
+                events.append(
+                    f"{bucket}: skipped {skip_count} {request_word} while temporarily suspended"
+                )
+
         return events
 
     def _get_state(self, bucket):
@@ -239,6 +279,9 @@ class SourceRequestController:
                 "semaphore": Semaphore(policy["max_concurrency"]),
                 "next_allowed_at": 0.0,
                 "backoff_until": 0.0,
+                "circuit_open_until": 0.0,
+                "consecutive_failures": 0,
+                "suspension_skip_count": 0,
                 "policy": policy,
             }
             self._states[bucket] = state
@@ -255,11 +298,48 @@ class SourceRequestController:
         with state["lock"]:
             state["backoff_until"] = max(state["backoff_until"], monotonic() + delay_seconds)
 
+    def _get_circuit_wait_seconds(self, state):
+        with state["lock"]:
+            return max(0.0, state["circuit_open_until"] - monotonic())
+
+    def _record_success(self, state):
+        with state["lock"]:
+            state["consecutive_failures"] = 0
+            state["circuit_open_until"] = 0.0
+
+    def _record_suspended_skip(self, state):
+        with state["lock"]:
+            state["suspension_skip_count"] += 1
+        self._increment("suspended_skips")
+
+    def _record_exhausted_failure(self, bucket, state):
+        with state["lock"]:
+            state["consecutive_failures"] += 1
+            failure_count = state["consecutive_failures"]
+            if failure_count < SOURCE_CIRCUIT_BREAKER_THRESHOLD:
+                return
+
+            cooldown_until = monotonic() + SOURCE_CIRCUIT_BREAKER_COOLDOWN_SECONDS
+            if cooldown_until <= state["circuit_open_until"]:
+                return
+            state["circuit_open_until"] = cooldown_until
+
+        self._increment("suspensions")
+        self._emit_event(
+            f"{bucket}: temporarily suspending requests for "
+            f"{SOURCE_CIRCUIT_BREAKER_COOLDOWN_SECONDS:.1f}s after {failure_count} consecutive failures"
+        )
+
     def fetch_json(self, url, timeout):
         bucket = get_source_request_bucket(url)
         state = self._get_state(bucket)
 
         for attempt in range(SOURCE_RETRY_MAX_ATTEMPTS + 1):
+            circuit_wait_seconds = self._get_circuit_wait_seconds(state)
+            if circuit_wait_seconds > 0:
+                self._record_suspended_skip(state)
+                raise TemporarySourceSuspensionError(bucket, circuit_wait_seconds)
+
             state["semaphore"].acquire()
             try:
                 wait_seconds = self._reserve_slot(state)
@@ -274,6 +354,7 @@ class SourceRequestController:
                 request = Request(url, headers=HTTP_HEADERS)
                 with urlopen(request, timeout=timeout) as response:
                     payload = response.read().decode("utf-8")
+                self._record_success(state)
                 if attempt > 0:
                     self._increment("recovered")
                     self._emit_event(f"{bucket}: request recovered after retry")
@@ -294,6 +375,7 @@ class SourceRequestController:
                             f"{bucket}: HTTP {exc.code}, backing off for {delay_seconds:.1f}s before retry"
                         )
                     continue
+                self._record_exhausted_failure(bucket, state)
                 raise
             except (URLError, TimeoutError, OSError):
                 if attempt < SOURCE_RETRY_MAX_ATTEMPTS:
@@ -304,6 +386,7 @@ class SourceRequestController:
                         f"{bucket}: transient network error, backing off for {delay_seconds:.1f}s before retry"
                     )
                     continue
+                self._record_exhausted_failure(bucket, state)
                 raise
             finally:
                 state["semaphore"].release()
@@ -373,6 +456,15 @@ def get_booru_auth_hint(site):
     if site_name == "gelbooru.com" and not has_booru_credentials(site_name):
         return "gelbooru.com: set GELBOORU_USER_ID and GELBOORU_API_KEY in .env for authenticated DAPI access"
     return None
+
+
+def record_source_lookup_error(facts, site, canonical_site, exc):
+    if is_temporary_source_suspension_error(exc):
+        return
+    facts["notes"].append(f"{site}: {exc}")
+    auth_hint = get_booru_auth_hint(canonical_site)
+    if auth_hint:
+        facts["notes"].append(auth_hint)
 
 
 def build_booru_api_url(domain, params):
@@ -775,10 +867,7 @@ def lookup_source_url(url, timeout, cache):
             if api_result:
                 merge_source_facts_into(result, api_result)
         except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
-            result["notes"].append(f"{site}: {exc}")
-            auth_hint = get_booru_auth_hint(canonical_site)
-            if auth_hint:
-                result["notes"].append(auth_hint)
+            record_source_lookup_error(result, site, canonical_site, exc)
 
         heuristic_artist = extract_artist_from_url(parsed)
         if heuristic_artist:
@@ -1165,10 +1254,7 @@ def lookup_sources_by_md5(
                                             pending_future.cancel()
                                     return facts
                         except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
-                            facts["notes"].append(f"{site}: {exc}")
-                            auth_hint = get_booru_auth_hint(site)
-                            if auth_hint:
-                                facts["notes"].append(auth_hint)
+                            record_source_lookup_error(facts, site, site, exc)
             return finalize_source_facts(facts)
 
         if len(requested_lookup_items) == 1 or not allow_parallel:
@@ -1183,10 +1269,7 @@ def lookup_sources_by_md5(
                         if stop_when is not None and stop_when(facts):
                             return facts
                 except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
-                    facts["notes"].append(f"{site}: {exc}")
-                    auth_hint = get_booru_auth_hint(site)
-                    if auth_hint:
-                        facts["notes"].append(auth_hint)
+                    record_source_lookup_error(facts, site, site, exc)
         else:
             max_workers = min(SOURCE_LOOKUP_MAX_WORKERS, len(requested_lookup_items))
             lookup_results = []
@@ -1209,10 +1292,7 @@ def lookup_sources_by_md5(
                                         pending_future.cancel()
                                 return facts
                     except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
-                        facts["notes"].append(f"{site}: {exc}")
-                        auth_hint = get_booru_auth_hint(site)
-                        if auth_hint:
-                            facts["notes"].append(auth_hint)
+                        record_source_lookup_error(facts, site, site, exc)
             if stop_when is not None:
                 return finalize_source_facts(facts)
 

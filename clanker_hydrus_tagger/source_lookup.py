@@ -166,8 +166,28 @@ def should_emit_lookup_progress(completed, total, last_emit_at):
     return completed % 25 == 0
 
 
+def summarize_source_request_events(events):
+    counts = {}
+    ordered_events = []
+    for event in events:
+        text = str(event)
+        if text not in counts:
+            counts[text] = 0
+            ordered_events.append(text)
+        counts[text] += 1
+
+    summarized = []
+    for event in ordered_events:
+        count = counts[event]
+        if count > 1:
+            summarized.append(f"{event} (x{count})")
+        else:
+            summarized.append(event)
+    return summarized
+
+
 def emit_source_request_events():
-    for event in SOURCE_REQUEST_CONTROLLER.drain_events():
+    for event in summarize_source_request_events(SOURCE_REQUEST_CONTROLLER.drain_events()):
         click.echo(f"Notice: {event}")
 
 
@@ -512,7 +532,9 @@ def run_lookup(
         f"{request_stats['requests']} requests, "
         f"{request_stats['retries']} retries, "
         f"{request_stats['rate_limits']} rate limits seen, "
-        f"{request_stats['recovered']} successful retries."
+        f"{request_stats['recovered']} successful retries, "
+        f"{request_stats['suspensions']} suspensions opened, "
+        f"{request_stats['suspended_skips']} requests skipped during suspension."
     )
 
     if metadata_records and records_with_urls == 0 and records_with_hash_source_hits == 0:

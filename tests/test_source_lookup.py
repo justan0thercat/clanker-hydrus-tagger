@@ -1,6 +1,6 @@
 import unittest
 from collections import defaultdict
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from unittest.mock import Mock, call, patch
 
 import click
@@ -182,7 +182,10 @@ class RunLookupTagFlushTests(unittest.TestCase):
              patch.object(source_lookup, "fetch_metadata_records", return_value=[{"hash": record_hash}]), \
              patch.object(source_lookup, "build_md5_lookup_map", return_value={}), \
              patch.object(source_lookup, "process_lookup_record", return_value=result), \
-             patch.object(source_lookup.SOURCE_REQUEST_CONTROLLER, "drain_events", side_effect=[["gelbooru: rate limited (HTTP 429), backing off for 5.0s"], []]), \
+             patch.object(source_lookup.SOURCE_REQUEST_CONTROLLER, "drain_events", side_effect=[[
+                 "gelbooru: rate limited (HTTP 429), backing off for 5.0s",
+                 "gelbooru: rate limited (HTTP 429), backing off for 5.0s",
+             ], []]), \
              patch.object(click, "echo", side_effect=lambda line, **kwargs: echo_lines.append(line)):
             source_lookup.run_lookup(
                 client=client,
@@ -199,10 +202,124 @@ class RunLookupTagFlushTests(unittest.TestCase):
 
         self.assertTrue(
             any(
-                line == "Notice: gelbooru: rate limited (HTTP 429), backing off for 5.0s"
+                line == "Notice: gelbooru: rate limited (HTTP 429), backing off for 5.0s (x2)"
                 for line in echo_lines
             )
         )
+
+
+class SourceRequestEventFormattingTests(unittest.TestCase):
+    def test_summarizes_repeated_events_while_preserving_order(self):
+        self.assertEqual(
+            source_lookup.summarize_source_request_events([
+                "gelbooru: transient network error",
+                "gelbooru: transient network error",
+                "gelbooru: throttling requests",
+                "gelbooru: transient network error",
+            ]),
+            [
+                "gelbooru: transient network error (x3)",
+                "gelbooru: throttling requests",
+            ],
+        )
+
+
+class SourceRequestControllerTests(unittest.TestCase):
+    def tearDown(self):
+        source_lookup_backends.SOURCE_REQUEST_CONTROLLER.reset()
+
+    def test_opens_circuit_after_consecutive_transient_failures(self):
+        controller = source_lookup_backends.SourceRequestController()
+        url = "https://gelbooru.com/index.php?page=dapi&s=post&q=index&json=1&tags=md5%3Aabc"
+
+        with patch.object(
+            source_lookup_backends,
+            "SOURCE_RETRY_MAX_ATTEMPTS",
+            0,
+        ), patch.object(
+            source_lookup_backends,
+            "SOURCE_CIRCUIT_BREAKER_THRESHOLD",
+            2,
+        ), patch.object(
+            source_lookup_backends,
+            "SOURCE_CIRCUIT_BREAKER_COOLDOWN_SECONDS",
+            30.0,
+        ), patch(
+            "clanker_hydrus_tagger.source_lookup_backends.urlopen",
+            side_effect=URLError("boom"),
+        ):
+            with self.assertRaises(URLError):
+                controller.fetch_json(url, timeout=5)
+            with self.assertRaises(URLError):
+                controller.fetch_json(url, timeout=5)
+
+            with self.assertRaises(source_lookup_backends.TemporarySourceSuspensionError) as suspended_exc:
+                controller.fetch_json(url, timeout=5)
+
+        self.assertIn("temporarily suspended", str(suspended_exc.exception))
+        self.assertEqual(
+            controller.snapshot(),
+            {
+                "requests": 2,
+                "retries": 0,
+                "rate_limits": 0,
+                "recovered": 0,
+                "suspensions": 1,
+                "suspended_skips": 1,
+            },
+        )
+        self.assertEqual(
+            controller.drain_events(),
+            [
+                "gelbooru: temporarily suspending requests for 30.0s after 2 consecutive failures",
+                "gelbooru: skipped 1 request while temporarily suspended",
+            ],
+        )
+
+    def test_success_resets_circuit_breaker_failure_streak(self):
+        controller = source_lookup_backends.SourceRequestController()
+        url = "https://gelbooru.com/index.php?page=dapi&s=post&q=index&json=1&tags=md5%3Aabc"
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b"[]"
+
+        with patch.object(
+            source_lookup_backends,
+            "SOURCE_RETRY_MAX_ATTEMPTS",
+            0,
+        ), patch.object(
+            source_lookup_backends,
+            "SOURCE_CIRCUIT_BREAKER_THRESHOLD",
+            2,
+        ), patch.object(
+            source_lookup_backends,
+            "SOURCE_CIRCUIT_BREAKER_COOLDOWN_SECONDS",
+            30.0,
+        ), patch(
+            "clanker_hydrus_tagger.source_lookup_backends.urlopen",
+            side_effect=[URLError("boom"), FakeResponse(), URLError("boom"), URLError("boom")],
+        ):
+            with self.assertRaises(URLError):
+                controller.fetch_json(url, timeout=5)
+
+            self.assertEqual(controller.fetch_json(url, timeout=5), [])
+
+            with self.assertRaises(URLError):
+                controller.fetch_json(url, timeout=5)
+            with self.assertRaises(URLError):
+                controller.fetch_json(url, timeout=5)
+
+            with self.assertRaises(source_lookup_backends.TemporarySourceSuspensionError) as suspended_exc:
+                controller.fetch_json(url, timeout=5)
+
+        self.assertIn("temporarily suspended", str(suspended_exc.exception))
 
 
 class ProcessLookupRecordTests(unittest.TestCase):
@@ -747,6 +864,21 @@ class Rule34ApiTests(unittest.TestCase):
             facts["notes"],
         )
 
+    def test_lookup_source_url_skips_notes_for_temporary_source_suspension(self):
+        with patch.object(
+            source_lookup_backends,
+            "lookup_gelbooru",
+            side_effect=source_lookup_backends.TemporarySourceSuspensionError("gelbooru", 12.0),
+        ):
+            facts = source_lookup_backends.lookup_source_url(
+                "https://gelbooru.com/index.php?page=post&s=view&id=1",
+                timeout=5,
+                cache=source_lookup.make_singleflight_cache(),
+            )
+
+        self.assertEqual(facts["site"], "gelbooru.com")
+        self.assertEqual(facts["notes"], [])
+
     def test_lookup_sources_by_md5_adds_rule34_auth_hint_when_request_fails_without_credentials(self):
         http_error = HTTPError(
             url="https://rule34.xxx/index.php?page=dapi&s=post&q=index&tags=md5%3Aabc",
@@ -808,6 +940,22 @@ class Rule34ApiTests(unittest.TestCase):
             "gelbooru.com: set GELBOORU_USER_ID and GELBOORU_API_KEY in .env for authenticated DAPI access",
             facts["notes"],
         )
+
+    def test_lookup_sources_by_md5_skips_notes_for_temporary_source_suspension(self):
+        with patch.object(
+            source_lookup_backends,
+            "lookup_gelbooru_by_md5",
+            side_effect=source_lookup_backends.TemporarySourceSuspensionError("gelbooru", 12.0),
+        ):
+            facts = source_lookup_backends.lookup_sources_by_md5(
+                "d" * 32,
+                timeout=5,
+                cache=source_lookup.make_singleflight_cache(),
+                requested_sites=["gelbooru"],
+                allow_parallel=False,
+            )
+
+        self.assertEqual(facts["notes"], [])
 
 
 class ResolveLookupFileOptimizationTests(unittest.TestCase):

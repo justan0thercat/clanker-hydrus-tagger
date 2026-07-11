@@ -1,5 +1,6 @@
 import unittest
 
+from clanker_hydrus_tagger import __main__ as main
 from clanker_hydrus_tagger.tag_namespaces import (
     filter_model_tags_by_existing_namespaces,
     parse_model_namespace_config,
@@ -55,6 +56,35 @@ class FilterModelTagsByExistingNamespacesTests(unittest.TestCase):
         )
 
         self.assertEqual(filtered, ["hakurei_reimu"])
+
+
+class FormatModelLoadErrorTests(unittest.TestCase):
+    def test_mentions_missing_model_folder(self):
+        message = main.format_model_load_error("JTP-3", False, FileNotFoundError("Model not found: model\\JTP-3\\model.onnx"))
+
+        self.assertIn('Model "JTP-3" failed to initialize.', message)
+        self.assertIn("model\\JTP-3", message)
+        self.assertIn("GPU mode", message)
+
+    def test_mentions_cpu_fallback_for_cuda_failures(self):
+        message = main.format_model_load_error(
+            "wd-eva02-large-tagger-v3",
+            False,
+            RuntimeError("LoadLibrary failed with error 126 while loading CUDAExecutionProvider"),
+        )
+
+        self.assertIn("install_cpu.bat", message)
+        self.assertIn("install_gpu.bat", message)
+
+    def test_mentions_huggingface_for_download_failures(self):
+        message = main.format_model_load_error(
+            "camie-tagger",
+            True,
+            RuntimeError("Couldn't reach Hugging Face while downloading model.onnx: timed out"),
+        )
+
+        self.assertIn("Hugging Face", message)
+        self.assertNotIn("GPU mode", message)
 
 
 if __name__ == "__main__":

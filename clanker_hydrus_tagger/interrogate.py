@@ -167,20 +167,29 @@ class WaifuDiffusionInterrogator:
         import onnxruntime as ort
         ort.set_default_logger_severity(3)
 
-        providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
-        if cpu:
-            providers.pop(0)
         cuda_options = {
             'cudnn_conv_algo_search': 'HEURISTIC',
             'arena_extend_strategy': 'kSameAsRequested',
         }
-        if not cpu and 'CUDAExecutionProvider' in providers:
-            self.model = InferenceSession(
-                str(model_path),
-                providers=[('CUDAExecutionProvider', cuda_options), 'CPUExecutionProvider']
-            )
+
+        if cpu:
+            self.model = InferenceSession(str(model_path), providers=['CPUExecutionProvider'])
         else:
-            self.model = InferenceSession(str(model_path), providers=providers)
+            try:
+                self.model = InferenceSession(
+                    str(model_path),
+                    providers=[('CUDAExecutionProvider', cuda_options), 'CPUExecutionProvider']
+                )
+            except Exception as gpu_exc:
+                print(f"Warning: CUDAExecutionProvider failed for {self.name}: {gpu_exc}")
+                print("Falling back to CPUExecutionProvider.")
+                try:
+                    self.model = InferenceSession(str(model_path), providers=['CPUExecutionProvider'])
+                except Exception as cpu_exc:
+                    raise RuntimeError(
+                        "CUDAExecutionProvider initialization failed and CPU fallback also failed. "
+                        f"GPU error: {gpu_exc}. CPU error: {cpu_exc}"
+                    ) from cpu_exc
 
         print(f'Loaded {self.name} model from {model_path}')
 

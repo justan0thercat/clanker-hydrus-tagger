@@ -165,6 +165,67 @@ def build_interrogator(model, modelinfo):
     )
 
 
+def format_model_load_error(model, cpu, exc):
+    raw_message = str(exc).strip() or exc.__class__.__name__
+    message = raw_message.lower()
+
+    details = [
+        f'Model "{model}" failed to initialize.',
+        f"Original error: {raw_message}",
+    ]
+
+    if (
+        isinstance(exc, FileNotFoundError)
+        or "model not found" in message
+        or "missing required model files" in message
+        or "no tag metadata found" in message
+    ):
+        details.append(
+            f"Model files are missing or incomplete under model\\{model}. "
+            "Restore that folder from a working install or let the app redownload the missing files."
+        )
+    elif "hugging face" in message or "couldn't download" in message or "couldn't reach" in message:
+        details.append(
+            "The launcher could not fetch a required model file from Hugging Face. "
+            "Check internet access on that machine, or copy the full model folder from a working install."
+        )
+    elif (
+        "cuda" in message
+        or "cudnn" in message
+        or "cublas" in message
+        or "executionprovider" in message
+        or "loadlibrary failed" in message
+    ):
+        details.append(
+            "The GPU runtime failed to start. Run install_cpu.bat to force CPU mode, "
+            "or rerun install_gpu.bat if this machine should use NVIDIA acceleration."
+        )
+    elif "onnxruntime" in message or "dll load failed" in message:
+        details.append(
+            "The ONNX Runtime installation looks broken or incomplete. "
+            "Rerun install_cpu.bat or install_gpu.bat in this portable folder."
+        )
+    else:
+        details.append(
+            "This usually means broken runtime dependencies or an incomplete portable update. "
+            "Rerun install_cpu.bat or install_gpu.bat and verify the model folder is present."
+        )
+
+    if not cpu:
+        details.append("This launcher started in GPU mode. If the machine is unstable after the update, CPU mode is the fastest sanity check.")
+
+    return "\n".join(details)
+
+
+def load_interrogator(model, modelinfo, cpu):
+    interrogator = build_interrogator(model, modelinfo)
+    try:
+        interrogator.load(cpu)
+    except Exception as exc:
+        raise click.ClickException(format_model_load_error(model, cpu, exc)) from exc
+    return interrogator
+
+
 def run_source_lookup_command(
     mode,
     lookupfile,
@@ -269,8 +330,7 @@ def evaluate(filename, cpu, model, threshold, max_tags):
     modelinfo = load_model_info(model)
 
     threshold, max_tags = resolve_runtime_options(modelinfo, threshold, max_tags)
-    interrogator = build_interrogator(model, modelinfo)
-    interrogator.load(cpu)
+    interrogator = load_interrogator(model, modelinfo, cpu)
     image = Image.open(filename)
     ratings, tags_dict = interrogator.interrogate(image)
 
@@ -316,8 +376,7 @@ def evaluate_api(hash, token, cpu, model, threshold, host, tag_service, ratings_
     client = create_hydrus_client(token, host)
     metadata_record = load_metadata_records_by_hash(client, [hash]).get(hash.lower())
 
-    interrogator = build_interrogator(model, modelinfo)
-    interrogator.load(cpu)
+    interrogator = load_interrogator(model, modelinfo, cpu)
     image_bytes = BytesIO(client.get_file(hash).content)
     image = Image.open(image_bytes)
     ratings, tags_dict = interrogator.interrogate(image)
@@ -389,8 +448,7 @@ def evaluate_api_batch(hashfile, token, cpu, model, threshold, host, tag_service
 
     client = create_hydrus_client(token, host)
 
-    interrogator = build_interrogator(model, modelinfo)
-    interrogator.load(cpu)
+    interrogator = load_interrogator(model, modelinfo, cpu)
 
     with open(hashfile, encoding="utf-8") as hashfile_f:
         all_hashes = [line.strip() for line in hashfile_f if line.strip()]

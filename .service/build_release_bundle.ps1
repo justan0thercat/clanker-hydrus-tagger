@@ -100,6 +100,56 @@ function Get-FileSha256 {
     }
 }
 
+function Get-PortableBundleRequiredEntries {
+    return @(
+        ".service\release_manifest.txt"
+        "model\JTP-3\info.json"
+        "model\JTP-3\model-labels.csv"
+        "model\Z3D-E621-Convnext\info.json"
+        "model\wd-eva02-large-tagger-v3\info.json"
+        "model\camie-tagger\info.json"
+    )
+}
+
+function Get-ZipEntries {
+    param([string]$Path)
+
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+
+    $archive = $null
+    try {
+        $archive = [System.IO.Compression.ZipFile]::OpenRead($Path)
+        return @($archive.Entries | ForEach-Object { $_.FullName.Replace("/", "\") })
+    }
+    finally {
+        if ($archive) {
+            $archive.Dispose()
+        }
+    }
+}
+
+function Assert-PortableBundleContents {
+    param([string]$Path)
+
+    $entries = Get-ZipEntries -Path $Path
+    $entrySet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($entry in $entries) {
+        [void]$entrySet.Add($entry)
+    }
+
+    foreach ($requiredEntry in Get-PortableBundleRequiredEntries) {
+        if (-not $entrySet.Contains($requiredEntry)) {
+            throw "Portable bundle is missing required file: $requiredEntry"
+        }
+    }
+
+    $unexpectedOnnx = @($entries | Where-Object { $_ -match '^model\\[^\\]+\\model\.onnx$' })
+    if ($unexpectedOnnx.Count -gt 0) {
+        $unexpectedList = ($unexpectedOnnx | Sort-Object) -join ", "
+        throw "Portable bundle must not include heavyweight ONNX files: $unexpectedList"
+    }
+}
+
 $repoRoot = Get-RepoRoot
 $manifestPath = Join-Path $repoRoot ".service\release_manifest.txt"
 $pyprojectPath = Join-Path $repoRoot "pyproject.toml"
@@ -139,6 +189,7 @@ try {
     }
 
     Compress-Archive -Path (Join-Path $stageRoot "*") -DestinationPath $assetPath -CompressionLevel Optimal
+    Assert-PortableBundleContents -Path $assetPath
 
     $hash = Get-FileSha256 -Path $assetPath
     Set-Content -LiteralPath $checksumPath -Value "$hash *$AssetName" -Encoding ascii

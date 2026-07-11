@@ -62,5 +62,32 @@ class LoadModelInfoTests(unittest.TestCase):
             model_info.load_model_info("unknown-model")
 
 
+    def test_backfills_missing_repo_id_from_bootstrap_repo(self):
+        info_path = Path("model") / "JTP-3" / "info.json"
+        info_path.parent.mkdir(parents=True, exist_ok=True)
+        info_path.write_text(
+            json.dumps({"modelname": "JTP-3", "repo_id": "", "tagsfile": "model-labels.csv"}),
+            encoding="utf-8",
+        )
+
+        result = model_info.load_model_info("JTP-3")
+
+        self.assertEqual(result["repo_id"], "0xk1ru/jtp-3-onnx")
+        self.assertEqual(result["tagsfile"], "model-labels.csv")
+
+
+    def test_keeps_valid_local_repo_id(self):
+        info_path = Path("model") / "JTP-3" / "info.json"
+        info_path.parent.mkdir(parents=True, exist_ok=True)
+        info_path.write_text(
+            json.dumps({"modelname": "JTP-3", "repo_id": "someone/custom-repo"}),
+            encoding="utf-8",
+        )
+
+        result = model_info.load_model_info("JTP-3")
+
+        self.assertEqual(result["repo_id"], "someone/custom-repo")
+
+
 if __name__ == "__main__":
     unittest.main()

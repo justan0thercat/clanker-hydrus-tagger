@@ -166,6 +166,39 @@ function Read-Manifest {
     return $entries
 }
 
+function Get-PortableBundleRequiredEntries {
+    return @(
+        ".service\release_manifest.txt"
+        "model\JTP-3\info.json"
+        "model\JTP-3\model-labels.csv"
+        "model\Z3D-E621-Convnext\info.json"
+        "model\wd-eva02-large-tagger-v3\info.json"
+        "model\camie-tagger\info.json"
+    )
+}
+
+function Assert-PortableReleasePayload {
+    param([string]$PayloadRoot)
+
+    $manifestPath = Join-Path $PayloadRoot ".service\release_manifest.txt"
+    $manifestEntries = Read-Manifest -Path $manifestPath
+    $manifestEntrySet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($entry in $manifestEntries) {
+        [void]$manifestEntrySet.Add($entry)
+    }
+
+    foreach ($requiredEntry in Get-PortableBundleRequiredEntries) {
+        if (-not $manifestEntrySet.Contains($requiredEntry)) {
+            throw "Release asset is incomplete: manifest is missing required file '$requiredEntry'."
+        }
+
+        $candidatePath = Join-Path $PayloadRoot $requiredEntry
+        if (-not (Test-Path -LiteralPath $candidatePath)) {
+            throw "Release asset is incomplete: packaged file is missing '$requiredEntry'."
+        }
+    }
+}
+
 function Ensure-PathIsInsideRoot {
     param(
         [string]$Root,
@@ -393,6 +426,7 @@ try {
         Expand-Archive -LiteralPath $zipPath -DestinationPath $extractPath -Force
 
         $incomingRoot = Resolve-ReleasePayloadRoot -ExtractPath $extractPath
+        Assert-PortableReleasePayload -PayloadRoot $incomingRoot
         $localManifestPath = Join-Path $repoRoot ".service\release_manifest.txt"
         $incomingManifestPath = Join-Path $incomingRoot ".service\release_manifest.txt"
 

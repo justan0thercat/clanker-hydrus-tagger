@@ -31,6 +31,22 @@ def _info_path(model):
     return _model_dir(model) / "info.json"
 
 
+def _is_valid_repo_id(repo_id):
+    return isinstance(repo_id, str) and "/" in repo_id
+
+
+def _apply_bootstrap_defaults(model, info):
+    bootstrap_config = BOOTSTRAP_MODEL_REPOS.get(model)
+    if bootstrap_config is None:
+        return info
+
+    normalized = dict(info)
+    if not _is_valid_repo_id(normalized.get("repo_id")):
+        normalized["repo_id"] = bootstrap_config["repo_id"]
+
+    return normalized
+
+
 def ensure_model_info(model):
     info_path = _info_path(model)
     if info_path.is_file():
@@ -59,4 +75,5 @@ def ensure_model_info(model):
 def load_model_info(model):
     info_path = ensure_model_info(model)
     with info_path.open(encoding="utf-8") as json_f:
-        return json.load(json_f)
+        info = json.load(json_f)
+    return _apply_bootstrap_defaults(model, info)

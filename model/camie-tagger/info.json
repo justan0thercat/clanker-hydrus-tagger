@@ -1,0 +1,12 @@
+{
+	"modelname": "camie_tagger_onnx",
+	"source": "deepghs",
+	"repo_id": "0xk1ru/camie-tagger-onnx",
+	"modelfile": "model.onnx",
+	"tagsfile": "camie-tagger-v2-metadata.json",
+	"ratingsflag": 1,
+	"numberofratings": 4,
+	"normalization": "range_-1_1",
+	"color_order": "RGB",
+	"score_activation": "none"
+}

@@ -1,0 +1,7 @@
+[project]
+name = "clanker-hydrus-tagger"
+version = "1.0.0"
+license = "GPL-2.0-or-later"
+dynamic = ["dependencies"]
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}

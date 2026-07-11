@@ -1,0 +1,10 @@
+{
+	"modelname": "3D-E621-Convnext",
+	"source": "toynya",
+	"repo_id": "toynya/Z3D-E621-Convnext",
+	"modelfile": "model.onnx",
+	"tagsfile": "tags-selected.csv",
+	"ratingsflag": 0,
+	"numberofratings": 0,
+	"normalization": null
+}

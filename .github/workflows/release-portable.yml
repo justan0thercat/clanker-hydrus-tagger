@@ -1,0 +1,50 @@
+name: release-portable
+
+on:
+  release:
+    types:
+      - published
+
+permissions:
+  contents: write
+
+jobs:
+  bundle:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Validate release tag
+        shell: pwsh
+        run: |
+          $versionLine = Get-Content pyproject.toml | Where-Object { $_ -match '^\s*version\s*=' } | Select-Object -First 1
+          if (-not $versionLine) {
+              throw "Could not read version from pyproject.toml."
+          }
+
+          if ($versionLine -notmatch '^\s*version\s*=\s*"([^"]+)"') {
+              throw "Could not parse version from pyproject.toml."
+          }
+
+          $projectVersion = $matches[1]
+          $tag = "${{ github.event.release.tag_name }}"
+          if ($tag -ne $projectVersion -and $tag -ne "v$projectVersion") {
+              throw "Release tag '$tag' does not match pyproject version '$projectVersion'."
+          }
+
+      - name: Build portable bundle
+        shell: pwsh
+        run: .\.service\build_release_bundle.ps1
+
+      - name: Upload portable assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" `
+            .\release\clanker-hydrus-tagger-portable.zip `
+            .\release\clanker-hydrus-tagger-portable.zip.sha256 `
+            --clobber

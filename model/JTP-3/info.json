@@ -1,0 +1,14 @@
+{
+	"modelname": "JTP-3",
+	"source": "RedRocket",
+	"repo_id": "0xk1ru/jtp-3-onnx",
+	"modelfile": "model.onnx",
+	"tagsfile": "model-labels.csv",
+	"ratingsflag": 0,
+	"numberofratings": 0,
+	"normalization": "range_-1_1",
+	"color_order": "RGB",
+	"score_activation": "sigmoid",
+	"default_threshold": 0.7,
+	"default_max_tags": 40
+}

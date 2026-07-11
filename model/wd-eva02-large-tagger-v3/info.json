@@ -1,0 +1,10 @@
+{
+	"modelname": "wd-eva02-large-tagger-v3",
+	"source": "SmilingWolf",
+	"repo_id": "SmilingWolf/wd-eva02-large-tagger-v3",
+	"modelfile": "model.onnx",
+	"tagsfile": "selected_tags.csv",
+	"ratingsflag": 1,
+	"numberofratings": 4,
+	"normalization": null
+}

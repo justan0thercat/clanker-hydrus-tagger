@@ -1,4 +1,5 @@
 .env.example
+example.hashes.txt
 .gitignore
 0_check_hydrus_api.bat
 1_JTP-3.bat

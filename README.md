@@ -76,6 +76,8 @@ HYDRUS_TOKEN=PASTE_YOUR_KEY_HERE
 
 ### 5. Put hashes into `hashes.txt`
 
+You can use [example.hashes.txt](example.hashes.txt) as a starter template.
+
 In Hydrus, select the image, `right-click -> share -> copy hashes -> sha256`. Put one hash on each line:
 
 ```text

@@ -1,4 +1,3 @@
-import json
 import os.path
 from io import BytesIO
 
@@ -7,6 +6,7 @@ import hydrus_api
 from PIL import Image, ImageFile
 
 from . import interrogate
+from .model_info import load_model_info as read_model_info
 from .source_lookup import extract_service_storage_tags, parse_namespace_config, run_lookup
 from .tag_namespaces import (
     filter_model_tags_by_existing_namespaces,
@@ -139,12 +139,10 @@ def create_hydrus_client(token, host):
 
 
 def load_model_info(model):
-    info_path = os.path.join(".", "model", model, "info.json")
-    if not os.path.isfile(info_path):
-        raise click.ClickException("info.json not found in model folder!")
-
-    with open(info_path, encoding="utf-8") as json_f:
-        return json.load(json_f)
+    try:
+        return read_model_info(model)
+    except (FileNotFoundError, RuntimeError) as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 def build_interrogator(model, modelinfo):

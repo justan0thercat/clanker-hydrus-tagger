@@ -27,6 +27,7 @@ clanker_hydrus_tagger/__init__.py
 clanker_hydrus_tagger/__main__.py
 clanker_hydrus_tagger/dbimutils.py
 clanker_hydrus_tagger/interrogate.py
+clanker_hydrus_tagger/model_info.py
 clanker_hydrus_tagger/onnx_loader.py
 clanker_hydrus_tagger/source_lookup.py
 clanker_hydrus_tagger/source_lookup_backends.py
@@ -36,5 +37,6 @@ clanker_hydrus_tagger/tag_namespaces.py
 docs/example.png
 docs/huggingface-model-release.md
 tests/test_main.py
+tests/test_model_info.py
 tests/test_source_lookup.py
 tests/test_tag_namespaces.py

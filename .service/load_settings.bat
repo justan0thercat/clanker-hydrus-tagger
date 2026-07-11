@@ -66,8 +66,8 @@ if not defined HYDRUS_TOKEN (
 
 if /i not "%WDHT_SKIP_UPDATE_CHECK%"=="1" (
     if /i "%AUTO_CHECK_UPDATES%"=="1" (
-        echo Checking for updates...
-        powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0update_from_release.ps1" -CheckOnly
+        echo Checking updates...
+        powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0update_from_release.ps1" -CheckOnly -Quiet
         set "WDHT_UPDATE_CHECK_EXIT=%ERRORLEVEL%"
 
         if "%WDHT_UPDATE_CHECK_EXIT%"=="2" (

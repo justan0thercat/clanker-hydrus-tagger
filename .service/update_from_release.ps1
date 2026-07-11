@@ -1,5 +1,6 @@
 param(
     [switch]$CheckOnly,
+    [switch]$Quiet,
     [switch]$Force,
     [switch]$SkipPip,
     [switch]$SkipDigestCheck,
@@ -287,7 +288,14 @@ $repoRoot = Get-RepoRoot
 $localPyproject = Join-Path $repoRoot "pyproject.toml"
 $localVersion = Get-VersionFromPyproject -Path $localPyproject
 
-Write-Host "Checking GitHub Releases for $RepoOwner/$RepoName..."
+function Write-Status {
+    param([string]$Message)
+    if (-not $Quiet) {
+        Write-Host $Message
+    }
+}
+
+Write-Status "Checking GitHub Releases for $RepoOwner/$RepoName..."
 $release = Get-ReleaseApiResponse -Owner $RepoOwner -Name $RepoName
 
 $releaseTag = [string]$release.tag_name
@@ -297,8 +305,8 @@ $latestComparable = ConvertTo-ComparableVersion $latestVersion
 $releaseUrl = [string]$release.html_url
 $asset = Get-ManagedReleaseAsset -Release $release -Name $AssetName
 
-Write-Host "Current version: $localVersion"
-Write-Host "Latest release:  $latestVersion ($releaseTag)"
+Write-Status "Current version: $localVersion"
+Write-Status "Latest release:  $latestVersion ($releaseTag)"
 
 $updateAvailable = $true
 if ($currentComparable -and $latestComparable) {
@@ -308,26 +316,26 @@ if ($currentComparable -and $latestComparable) {
 }
 
 if (-not $updateAvailable -and -not $Force) {
-    Write-Host "Already up to date."
+    Write-Status "Already up to date."
     if ($releaseUrl) {
-        Write-Host "Release page: $releaseUrl"
+        Write-Status "Release page: $releaseUrl"
     }
     exit 0
 }
 
 if ($CheckOnly) {
     if ($updateAvailable) {
-        Write-Host "Update available."
+        Write-Status "Update available."
         if (-not $asset) {
-            Write-Host "Warning: release asset '$AssetName' is missing, so the updater cannot install it yet."
+            Write-Status "Warning: release asset '$AssetName' is missing, so the updater cannot install it yet."
         }
         if ($releaseUrl) {
-            Write-Host "Release page: $releaseUrl"
+            Write-Status "Release page: $releaseUrl"
         }
         exit 2
     }
 
-    Write-Host "Already up to date."
+    Write-Status "Already up to date."
     exit 0
 }
 

@@ -284,7 +284,9 @@ def get_singleflight_cached(cache_state, key, factory):
 
 def read_lookup_lines(lookupfile):
     if not os.path.isfile(lookupfile):
-        raise click.ClickException("lookup file not found!")
+        raise click.ClickException(
+            f'Lookup file "{lookupfile}" was not found. Create it or point the launcher to a valid text file.'
+        )
 
     lines = []
     with open(lookupfile, encoding="utf-8") as lookup_f:
@@ -293,6 +295,12 @@ def read_lookup_lines(lookupfile):
             if not line or line.startswith("#"):
                 continue
             lines.append((line_number, line))
+
+    if not lines:
+        raise click.ClickException(
+            f'Lookup file "{lookupfile}" is empty. Put one sha256/md5/sha1/sha512, file_id, or full https:// URL per line.'
+        )
+
     return lines
 
 

@@ -80,6 +80,27 @@ def format_tags(clipped_tags, tag_to_category=None, namespace_config=None):
     return formatted_tags
 
 
+def read_hash_file_lines(hashfile):
+    if not os.path.isfile(hashfile):
+        raise click.ClickException(
+            f'Input file "{hashfile}" was not found. Create it and put one Hydrus sha256 hash per line.'
+        )
+
+    with open(hashfile, encoding="utf-8") as hashfile_f:
+        hashes = [
+            line.strip()
+            for line in hashfile_f
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+
+    if not hashes:
+        raise click.ClickException(
+            f'Input file "{hashfile}" is empty. Put one Hydrus sha256 hash per line.'
+        )
+
+    return hashes
+
+
 def load_metadata_records_by_hash(client, hashes):
     metadata_records = client.get_file_metadata(hashes=hashes)
     records_by_hash = {}
@@ -435,8 +456,7 @@ def evaluate_api(hash, token, cpu, model, threshold, host, tag_service, ratings_
     help="Comma-separated model categories to suppress if the target tag service already has that namespace, for example artist,character.",
 )
 def evaluate_api_batch(hashfile, token, cpu, model, threshold, host, tag_service, ratings_only, privacy, batch_size, batch_inference, max_tags, namespace, skip_existing):
-    if not os.path.isfile(hashfile):
-        raise ValueError("hashfile not found!")
+    all_hashes = read_hash_file_lines(hashfile)
     modelinfo = load_model_info(model)
 
     if ratings_only and not modelinfo["ratingsflag"]:
@@ -449,9 +469,6 @@ def evaluate_api_batch(hashfile, token, cpu, model, threshold, host, tag_service
     client = create_hydrus_client(token, host)
 
     interrogator = load_interrogator(model, modelinfo, cpu)
-
-    with open(hashfile, encoding="utf-8") as hashfile_f:
-        all_hashes = [line.strip() for line in hashfile_f if line.strip()]
 
     total = len(all_hashes)
     click.echo(f"Total files to process: {total}")

@@ -66,26 +66,23 @@ if not defined HYDRUS_TOKEN (
 
 if /i not "%WDHT_SKIP_UPDATE_CHECK%"=="1" (
     if /i "%AUTO_CHECK_UPDATES%"=="1" (
-        echo Checking updates...
         powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0update_from_release.ps1" -CheckOnly -Quiet
-        set "WDHT_UPDATE_CHECK_EXIT=%ERRORLEVEL%"
-
-        if "%WDHT_UPDATE_CHECK_EXIT%"=="2" (
+        if errorlevel 3 (
+            echo Update check failed. Continuing without blocking this launcher.
+        ) else if errorlevel 2 (
             choice /C UCP /N /M "Update found. [U]pdate and launch, update and [C]lose, [P]roceed without update? "
-            set "WDHT_UPDATE_CHOICE=%ERRORLEVEL%"
-
-            if "%WDHT_UPDATE_CHOICE%"=="1" (
+            if errorlevel 2 (
+                if not errorlevel 3 (
+                    powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0update_from_release.ps1"
+                    if errorlevel 1 exit /b 1
+                    exit /b %WDHT_CLOSE_AFTER_UPDATE_EXIT%
+                )
+            ) else if errorlevel 1 (
                 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0update_from_release.ps1"
                 if errorlevel 1 exit /b 1
                 exit /b %WDHT_RELAUNCH_AFTER_UPDATE_EXIT%
             )
-
-            if "%WDHT_UPDATE_CHOICE%"=="2" (
-                powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0update_from_release.ps1"
-                if errorlevel 1 exit /b 1
-                exit /b %WDHT_CLOSE_AFTER_UPDATE_EXIT%
-            )
-        ) else if not "%WDHT_UPDATE_CHECK_EXIT%"=="0" (
+        ) else if errorlevel 1 (
             echo Update check failed. Continuing without blocking this launcher.
         )
     )

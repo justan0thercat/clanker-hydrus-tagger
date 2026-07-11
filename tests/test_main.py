@@ -1,4 +1,25 @@
+import sys
+import types
 import unittest
+
+from click.testing import CliRunner
+
+sys.modules.setdefault(
+    "hydrus_api",
+    types.SimpleNamespace(
+        Client=object,
+        ConnectionError=Exception,
+        InsufficientAccess=Exception,
+        APIError=Exception,
+    ),
+)
+pil_module = types.ModuleType("PIL")
+pil_module.Image = types.SimpleNamespace(MAX_IMAGE_PIXELS=None)
+pil_module.ImageFile = types.SimpleNamespace(LOAD_TRUNCATED_IMAGES=False)
+sys.modules.setdefault("PIL", pil_module)
+interrogate_module = types.ModuleType("clanker_hydrus_tagger.interrogate")
+interrogate_module.WaifuDiffusionInterrogator = object
+sys.modules.setdefault("clanker_hydrus_tagger.interrogate", interrogate_module)
 
 from clanker_hydrus_tagger import __main__ as main
 from clanker_hydrus_tagger.tag_namespaces import (
@@ -85,6 +106,28 @@ class FormatModelLoadErrorTests(unittest.TestCase):
 
         self.assertIn("Hugging Face", message)
         self.assertNotIn("GPU mode", message)
+
+
+class ReadHashFileLinesTests(unittest.TestCase):
+    def test_reports_missing_hash_file(self):
+        runner = CliRunner()
+
+        result = runner.invoke(main.evaluate_api_batch, ["missing_hashes.txt"])
+
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn('Input file "missing_hashes.txt" was not found.', result.output)
+
+    def test_reports_empty_hash_file(self):
+        runner = CliRunner()
+
+        with runner.isolated_filesystem():
+            with open("hashes.txt", "w", encoding="utf-8") as handle:
+                handle.write("\n# comment only\n")
+
+            result = runner.invoke(main.evaluate_api_batch, ["hashes.txt"])
+
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn('Input file "hashes.txt" is empty.', result.output)
 
 
 if __name__ == "__main__":

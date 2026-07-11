@@ -80,6 +80,26 @@ function Copy-ManifestFile {
     Copy-Item -LiteralPath $sourcePath -Destination $destinationPath -Force
 }
 
+function Get-FileSha256 {
+    param([string]$Path)
+
+    $stream = $null
+    $sha256 = $null
+    try {
+        $stream = [System.IO.File]::OpenRead($Path)
+        $sha256 = [System.Security.Cryptography.SHA256]::Create()
+        return ([System.BitConverter]::ToString($sha256.ComputeHash($stream))).Replace("-", "").ToLowerInvariant()
+    }
+    finally {
+        if ($sha256) {
+            $sha256.Dispose()
+        }
+        if ($stream) {
+            $stream.Dispose()
+        }
+    }
+}
+
 $repoRoot = Get-RepoRoot
 $manifestPath = Join-Path $repoRoot ".service\release_manifest.txt"
 $pyprojectPath = Join-Path $repoRoot "pyproject.toml"
@@ -120,7 +140,7 @@ try {
 
     Compress-Archive -Path (Join-Path $stageRoot "*") -DestinationPath $assetPath -CompressionLevel Optimal
 
-    $hash = (Get-FileHash -LiteralPath $assetPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $hash = Get-FileSha256 -Path $assetPath
     Set-Content -LiteralPath $checksumPath -Value "$hash *$AssetName" -Encoding ascii
 
     Write-Host "Built release bundle for version $version"

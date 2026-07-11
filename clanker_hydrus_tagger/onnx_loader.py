@@ -3,6 +3,7 @@ import sys
 import subprocess
 import os
 import shlex
+import time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
@@ -12,6 +13,8 @@ skip_install = False
 index_url = os.environ.get('INDEX_URL', "")
 python = sys.executable
 DOWNLOAD_CHUNK_SIZE = 1024 * 1024
+PROGRESS_BAR_WIDTH = 24
+PROGRESS_UPDATE_INTERVAL_SECONDS = 0.2
 
 
 def is_installed(package):
@@ -111,10 +114,53 @@ def _build_hf_resolve_url(repo_id, filename, revision="main"):
     return f"https://huggingface.co/{repo_id}/resolve/{quoted_revision}/{quoted_filename}?download=true"
 
 
+def _format_byte_count(byte_count):
+    value = float(max(0, byte_count))
+    units = ["B", "KB", "MB", "GB", "TB"]
+    unit_index = 0
+
+    while value >= 1024 and unit_index < len(units) - 1:
+        value /= 1024
+        unit_index += 1
+
+    if unit_index == 0:
+        return f"{int(value)} {units[unit_index]}"
+    if value >= 100:
+        return f"{value:.0f} {units[unit_index]}"
+    if value >= 10:
+        return f"{value:.1f} {units[unit_index]}"
+    return f"{value:.2f} {units[unit_index]}"
+
+
+def _build_ascii_progress_bar(progress, width=PROGRESS_BAR_WIDTH):
+    progress = min(max(progress, 0.0), 1.0)
+    filled_width = int(progress * width)
+    if progress > 0 and filled_width == 0:
+        filled_width = 1
+    if progress >= 1.0:
+        filled_width = width
+    return "[" + ("#" * filled_width) + ("-" * (width - filled_width)) + "]"
+
+
+def _format_download_progress_line(filename, downloaded, total_bytes, started_at, current_time):
+    elapsed = max(current_time - started_at, 0.001)
+    speed = downloaded / elapsed if downloaded > 0 else 0.0
+    speed_text = f"{_format_byte_count(speed)}/s"
+
+    if total_bytes:
+        progress = downloaded / total_bytes
+        percent_text = f"{progress * 100:5.1f}%"
+        size_text = f"{_format_byte_count(downloaded)}/{_format_byte_count(total_bytes)}"
+        return f"{filename}: {_build_ascii_progress_bar(progress)} {percent_text} {size_text} {speed_text}"
+
+    return f"{filename}: {_format_byte_count(downloaded)} downloaded {speed_text}"
+
+
 def _download_file(url, destination, token=None):
     destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     temp_destination = destination.with_suffix(destination.suffix + ".part")
+    progress_started = False
 
     headers = {"User-Agent": "clanker-hydrus-tagger/0.0.1"}
     if token:
@@ -127,7 +173,37 @@ def _download_file(url, destination, token=None):
             total_bytes = response.headers.get("Content-Length")
             total_bytes = int(total_bytes) if total_bytes else None
             downloaded = 0
-            next_progress_mark = 0.1
+            started_at = time.monotonic()
+            last_render_at = 0.0
+            last_render_length = 0
+            progress_started = False
+
+            def render_progress(downloaded_bytes, total_bytes_value, force=False):
+                nonlocal last_render_at
+                nonlocal last_render_length
+                nonlocal progress_started
+
+                now = time.monotonic()
+                if not force and (now - last_render_at) < PROGRESS_UPDATE_INTERVAL_SECONDS:
+                    return
+
+                line = _format_download_progress_line(
+                    destination.name,
+                    downloaded_bytes,
+                    total_bytes_value,
+                    started_at,
+                    now,
+                )
+                if len(line) < last_render_length:
+                    line += " " * (last_render_length - len(line))
+
+                sys.stdout.write("\r" + line)
+                sys.stdout.flush()
+                last_render_at = now
+                last_render_length = len(line)
+                progress_started = True
+
+            render_progress(downloaded, total_bytes, force=True)
 
             while True:
                 chunk = response.read(DOWNLOAD_CHUNK_SIZE)
@@ -136,15 +212,16 @@ def _download_file(url, destination, token=None):
 
                 output_file.write(chunk)
                 downloaded += len(chunk)
+                render_progress(downloaded, total_bytes)
 
-                if total_bytes:
-                    progress = downloaded / total_bytes
-                    if progress >= next_progress_mark or downloaded == total_bytes:
-                        print(f"  {destination.name}: {progress * 100:.0f}%")
-                        next_progress_mark += 0.1
-                elif downloaded and downloaded % (100 * DOWNLOAD_CHUNK_SIZE) == 0:
-                    print(f"  {destination.name}: {downloaded / (1024 * 1024):.0f} MB downloaded")
+            render_progress(downloaded, total_bytes, force=True)
+            if progress_started:
+                sys.stdout.write("\n")
+                sys.stdout.flush()
     except HTTPError as exc:
+        if progress_started:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
         if temp_destination.exists():
             temp_destination.unlink()
         raise RuntimeError(
@@ -152,10 +229,16 @@ def _download_file(url, destination, token=None):
             "If the repo is private or gated, set HF_TOKEN first."
         ) from exc
     except URLError as exc:
+        if progress_started:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
         if temp_destination.exists():
             temp_destination.unlink()
         raise RuntimeError(f"Couldn't reach Hugging Face while downloading {destination.name}: {exc.reason}") from exc
     except Exception:
+        if progress_started:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
         if temp_destination.exists():
             temp_destination.unlink()
         raise
@@ -183,7 +266,6 @@ def ensure_huggingface_files(model_dir, repo_id, filenames, revision="main", mod
     for filename in missing_files:
         destination = model_dir / filename
         url = _build_hf_resolve_url(repo_id, filename, revision=revision)
-        print(f"Downloading {filename}...")
         _download_file(url, destination, token=token)
 
     print(f"Finished downloading missing files for {label}.")

@@ -1,12 +1,27 @@
+import os
+import sys
+import types
 import unittest
 from collections import defaultdict
+from tempfile import NamedTemporaryFile
 from urllib.error import HTTPError, URLError
 from unittest.mock import Mock, call, patch
 
 import click
 
+sys.modules.setdefault(
+    "hydrus_api",
+    types.SimpleNamespace(
+        Client=object,
+        ConnectionError=Exception,
+        InsufficientAccess=Exception,
+        APIError=Exception,
+    ),
+)
+
 from clanker_hydrus_tagger import source_lookup
 from clanker_hydrus_tagger import source_lookup_backends
+from clanker_hydrus_tagger import source_lookup_common
 
 
 class ParseLookupEntryTests(unittest.TestCase):
@@ -33,6 +48,23 @@ class ParseLookupEntryTests(unittest.TestCase):
     def test_rejects_invalid_value(self):
         with self.assertRaises(click.ClickException):
             source_lookup.parse_lookup_entry("not-a-valid-lookup")
+
+
+class ReadLookupLinesTests(unittest.TestCase):
+    def test_reports_missing_lookup_file(self):
+        with self.assertRaisesRegex(click.ClickException, 'Lookup file "missing.txt" was not found'):
+            source_lookup_common.read_lookup_lines("missing.txt")
+
+    def test_reports_empty_lookup_file(self):
+        with NamedTemporaryFile("w", encoding="utf-8", suffix=".txt", delete=False) as handle:
+            path = handle.name
+            handle.write("\n# comment only\n")
+
+        try:
+            with self.assertRaisesRegex(click.ClickException, 'Lookup file ".*" is empty'):
+                source_lookup_common.read_lookup_lines(path)
+        finally:
+            os.remove(path)
 
 
 class ParseRequestedSitesTests(unittest.TestCase):

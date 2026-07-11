@@ -251,7 +251,22 @@ function Test-FileSha256 {
         return
     }
 
-    $actual = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    $stream = $null
+    $sha256 = $null
+    try {
+        $stream = [System.IO.File]::OpenRead($Path)
+        $sha256 = [System.Security.Cryptography.SHA256]::Create()
+        $actual = ([System.BitConverter]::ToString($sha256.ComputeHash($stream))).Replace("-", "").ToLowerInvariant()
+    }
+    finally {
+        if ($sha256) {
+            $sha256.Dispose()
+        }
+        if ($stream) {
+            $stream.Dispose()
+        }
+    }
+
     if ($actual -ne $ExpectedSha256.ToLowerInvariant()) {
         throw "Downloaded release asset failed SHA-256 verification."
     }
@@ -295,127 +310,141 @@ function Write-Status {
     }
 }
 
-Write-Status "Checking GitHub Releases for $RepoOwner/$RepoName..."
-$release = Get-ReleaseApiResponse -Owner $RepoOwner -Name $RepoName
+try {
+    Write-Status "Checking GitHub Releases for $RepoOwner/$RepoName..."
+    $release = Get-ReleaseApiResponse -Owner $RepoOwner -Name $RepoName
 
-$releaseTag = [string]$release.tag_name
-$latestVersion = Normalize-VersionString $releaseTag
-$currentComparable = ConvertTo-ComparableVersion $localVersion
-$latestComparable = ConvertTo-ComparableVersion $latestVersion
-$releaseUrl = [string]$release.html_url
-$asset = Get-ManagedReleaseAsset -Release $release -Name $AssetName
+    $releaseTag = [string]$release.tag_name
+    $latestVersion = Normalize-VersionString $releaseTag
+    $currentComparable = ConvertTo-ComparableVersion $localVersion
+    $latestComparable = ConvertTo-ComparableVersion $latestVersion
+    $releaseUrl = [string]$release.html_url
+    $asset = Get-ManagedReleaseAsset -Release $release -Name $AssetName
 
-Write-Status "Current version: $localVersion"
-Write-Status "Latest release:  $latestVersion ($releaseTag)"
+    Write-Status "Current version: $localVersion"
+    Write-Status "Latest release:  $latestVersion ($releaseTag)"
 
-$updateAvailable = $true
-if ($currentComparable -and $latestComparable) {
-    $updateAvailable = $latestComparable -gt $currentComparable
-} elseif ($localVersion -and $latestVersion) {
-    $updateAvailable = $latestVersion -ne $localVersion
-}
-
-if (-not $updateAvailable -and -not $Force) {
-    Write-Status "Already up to date."
-    if ($releaseUrl) {
-        Write-Status "Release page: $releaseUrl"
+    $updateAvailable = $true
+    if ($currentComparable -and $latestComparable) {
+        $updateAvailable = $latestComparable -gt $currentComparable
+    } elseif ($localVersion -and $latestVersion) {
+        $updateAvailable = $latestVersion -ne $localVersion
     }
-    exit 0
-}
 
-if ($CheckOnly) {
-    if ($updateAvailable) {
-        Write-Status "Update available."
-        if (-not $asset) {
-            Write-Status "Warning: release asset '$AssetName' is missing, so the updater cannot install it yet."
-        }
+    if (-not $updateAvailable -and -not $Force) {
+        Write-Status "Already up to date."
         if ($releaseUrl) {
             Write-Status "Release page: $releaseUrl"
         }
-        exit 2
+        exit 0
     }
 
-    Write-Status "Already up to date."
-    exit 0
-}
+    if ($CheckOnly) {
+        if ($updateAvailable) {
+            Write-Status "Update available."
+            if (-not $asset) {
+                Write-Status "Warning: release asset '$AssetName' is missing, so the updater cannot install it yet."
+            }
+            if ($releaseUrl) {
+                Write-Status "Release page: $releaseUrl"
+            }
+            exit 2
+        }
 
-if (-not $asset) {
-    throw "Latest release does not include the expected asset '$AssetName'. Publish that asset on the release before updating."
-}
+        Write-Status "Already up to date."
+        exit 0
+    }
 
-$assetUrl = [string]$asset.browser_download_url
-if (-not $assetUrl) {
-    throw "Release asset '$AssetName' does not expose a browser download URL."
-}
+    if (-not $asset) {
+        throw "Latest release does not include the expected asset '$AssetName'. Publish that asset on the release before updating."
+    }
 
-$tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("clanker-update-" + [System.Guid]::NewGuid().ToString("N"))
-New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
+    $assetUrl = [string]$asset.browser_download_url
+    if (-not $assetUrl) {
+        throw "Release asset '$AssetName' does not expose a browser download URL."
+    }
 
-try {
-    $zipPath = Join-Path $tempRoot "release.zip"
-    $extractPath = Join-Path $tempRoot "extract"
-    $expectedSha256 = $null
+    $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("clanker-update-" + [System.Guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
 
-    if (-not $SkipDigestCheck) {
-        $expectedSha256 = Get-AssetSha256 -Release $release -Asset $asset
+    try {
+        $zipPath = Join-Path $tempRoot "release.zip"
+        $extractPath = Join-Path $tempRoot "extract"
+        $expectedSha256 = $null
+
+        if (-not $SkipDigestCheck) {
+            $expectedSha256 = Get-AssetSha256 -Release $release -Asset $asset
+            if ($expectedSha256) {
+                Write-Host "Using SHA-256: $expectedSha256"
+            } else {
+                Write-Host "Release asset digest not available. Continuing without SHA-256 verification."
+            }
+        }
+
+        Write-Host "Downloading release asset $($asset.name)..."
+        Invoke-WebRequest -Uri $assetUrl -OutFile $zipPath -UseBasicParsing -TimeoutSec 60
+
         if ($expectedSha256) {
-            Write-Host "Using SHA-256: $expectedSha256"
-        } else {
-            Write-Host "Release asset digest not available. Continuing without SHA-256 verification."
+            Write-Host "Verifying release asset..."
+            Test-FileSha256 -Path $zipPath -ExpectedSha256 $expectedSha256
+        }
+
+        Write-Host "Extracting release payload..."
+        Expand-Archive -LiteralPath $zipPath -DestinationPath $extractPath -Force
+
+        $incomingRoot = Resolve-ReleasePayloadRoot -ExtractPath $extractPath
+        $localManifestPath = Join-Path $repoRoot ".service\release_manifest.txt"
+        $incomingManifestPath = Join-Path $incomingRoot ".service\release_manifest.txt"
+
+        $currentManifest = Read-Manifest -Path $localManifestPath
+        $incomingManifest = Read-Manifest -Path $incomingManifestPath
+
+        if (-not $incomingManifest -or $incomingManifest.Count -eq 0) {
+            throw "Incoming release manifest is missing or empty."
+        }
+
+        $incomingSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        foreach ($path in $incomingManifest) {
+            [void]$incomingSet.Add($path)
+        }
+
+        foreach ($path in $currentManifest) {
+            if (-not $incomingSet.Contains($path)) {
+                Write-Host "Removing retired file: $path"
+                Remove-ManagedPath -Root $repoRoot -RelativePath $path
+            }
+        }
+
+        foreach ($path in $incomingManifest) {
+            Write-Host "Updating $path"
+            Copy-ManagedFile -SourceRoot $incomingRoot -DestinationRoot $repoRoot -RelativePath $path
+        }
+
+        if (-not $SkipPip) {
+            Invoke-PipRefresh -Root $repoRoot
+        }
+
+        Write-Host ""
+        Write-Host "Update complete."
+        if ($releaseUrl) {
+            Write-Host "Updated from: $releaseUrl"
         }
     }
-
-    Write-Host "Downloading release asset $($asset.name)..."
-    Invoke-WebRequest -Uri $assetUrl -OutFile $zipPath -UseBasicParsing -TimeoutSec 60
-
-    if ($expectedSha256) {
-        Write-Host "Verifying release asset..."
-        Test-FileSha256 -Path $zipPath -ExpectedSha256 $expectedSha256
-    }
-
-    Write-Host "Extracting release payload..."
-    Expand-Archive -LiteralPath $zipPath -DestinationPath $extractPath -Force
-
-    $incomingRoot = Resolve-ReleasePayloadRoot -ExtractPath $extractPath
-    $localManifestPath = Join-Path $repoRoot ".service\release_manifest.txt"
-    $incomingManifestPath = Join-Path $incomingRoot ".service\release_manifest.txt"
-
-    $currentManifest = Read-Manifest -Path $localManifestPath
-    $incomingManifest = Read-Manifest -Path $incomingManifestPath
-
-    if (-not $incomingManifest -or $incomingManifest.Count -eq 0) {
-        throw "Incoming release manifest is missing or empty."
-    }
-
-    $incomingSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-    foreach ($path in $incomingManifest) {
-        [void]$incomingSet.Add($path)
-    }
-
-    foreach ($path in $currentManifest) {
-        if (-not $incomingSet.Contains($path)) {
-            Write-Host "Removing retired file: $path"
-            Remove-ManagedPath -Root $repoRoot -RelativePath $path
+    finally {
+        if (Test-Path -LiteralPath $tempRoot) {
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force
         }
-    }
-
-    foreach ($path in $incomingManifest) {
-        Write-Host "Updating $path"
-        Copy-ManagedFile -SourceRoot $incomingRoot -DestinationRoot $repoRoot -RelativePath $path
-    }
-
-    if (-not $SkipPip) {
-        Invoke-PipRefresh -Root $repoRoot
-    }
-
-    Write-Host ""
-    Write-Host "Update complete."
-    if ($releaseUrl) {
-        Write-Host "Updated from: $releaseUrl"
     }
 }
-finally {
-    if (Test-Path -LiteralPath $tempRoot) {
-        Remove-Item -LiteralPath $tempRoot -Recurse -Force
+catch {
+    $message = $_.Exception.Message
+    if ([string]::IsNullOrWhiteSpace($message)) {
+        $message = $_.ToString()
     }
+    if ($CheckOnly) {
+        Write-Host "Update check failed. Reason: $message"
+    } else {
+        Write-Host "Update failed. Reason: $message"
+    }
+    exit 1
 }
